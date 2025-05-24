@@ -7,7 +7,7 @@ from tkinter import ttk, filedialog, messagebox
 from sklearn.metrics import silhouette_score
 from scipy.cluster.hierarchy import linkage, fcluster
 from scipy.spatial.distance import chebyshev
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.decomposition import PCA
 import matplotlib.pyplot as plt
 
@@ -16,7 +16,7 @@ class DataClusteringApp(tk.Tk):
         super().__init__()
         self.title("Приложение для кластеризации данных")
         self.minsize(600, 400)
-        self.geometry("800x550")
+        self.geometry("750x600")
 
         self.original_data = pd.DataFrame()
         self.current_data = pd.DataFrame()
@@ -47,20 +47,19 @@ class DataClusteringApp(tk.Tk):
         self.visualize_button = ttk.Button(control_frame, text="Визуализировать кластеры", command=self.visualize_clusters)
         self.visualize_button.pack(fill="x", pady=5)
 
-        ttk.Label(control_frame, text="Число признаков (0 — все):").pack(pady=5)
+        ttk.Label(control_frame, text="Число признаков\n"+"(если пусто — будут задействованы все):").pack(fill="x", pady=5)
         self.feature_count_entry = ttk.Entry(control_frame)
         self.feature_count_entry.pack(fill="x", pady=5)
 
-        ttk.Label(control_frame, text="Число кластеров (0 или пусто — авто, ≥2 вручную):").pack(pady=5)
+        ttk.Label(control_frame, text="Число кластеров\n"+"(если пусто — подберётся автоматически):").pack(fill="x", pady=5)
         self.cluster_count_entry = ttk.Entry(control_frame)
         self.cluster_count_entry.pack(fill="x", pady=5)
-
         self.cluster_button = ttk.Button(control_frame, text="Запустить кластеризацию", command=self.perform_clustering)
         self.cluster_button.pack(fill="x", pady=5)
 
         ttk.Label(control_frame, text="Результаты:", font=("Arial", 10, "bold")).pack(pady=5)
-        self.status_text = tk.Text(control_frame, height=8, bg="#f0f0f0", state="disabled", font=("Arial", 10))
-        self.status_text.pack(fill="x", pady=5)
+        self.status_text = tk.Text(control_frame, height=12, bg="#f0f0f0", state="disabled", font=("Arial", 10))
+        self.status_text.pack(fill="both", expand=True, pady=15)
 
         table_frame = ttk.Frame(main_frame)
         table_frame.pack(side="right", fill="both", expand=True, padx=5)
@@ -84,11 +83,14 @@ class DataClusteringApp(tk.Tk):
         try:
             file_path = filedialog.asksaveasfilename(
                 defaultextension=".csv",
-                filetypes=[("CSV файлы", "*.csv")],
+                filetypes=[("Excel файлы", "*.xlsx"), ("CSV файлы", "*.csv")],
                 title="Сохранить датасет"
             )
             if file_path:
-                self.current_data.to_csv(file_path, index=False)
+                if file_path.lower().endswith('.xlsx'):
+                    self.current_data.to_excel(file_path, index=False, engine='openpyxl')
+                else:
+                    self.current_data.to_csv(file_path, index=False)
                 self.update_status(f"Датасет успешно сохранён в {file_path}")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка при сохранении датасета: {e}")
@@ -185,14 +187,18 @@ class DataClusteringApp(tk.Tk):
                 messagebox.showerror("Ошибка", "Недостаточно данных для визуализации.")
                 return
 
+            scaler = MinMaxScaler()
+            scaled_data = scaler.fit_transform(feature_matrix)
+
             pca = PCA(n_components=2)
-            reduced_data = pca.fit_transform(feature_matrix)
+            reduced_data = pca.fit_transform(scaled_data)
+            explained_variance = pca.explained_variance_ratio_
 
             plt.figure(figsize=(8, 6))
             scatter = plt.scatter(reduced_data[:, 0], reduced_data[:, 1], c=labels, cmap='viridis', alpha=0.6)
             plt.xlabel('Главная компонента 1')
             plt.ylabel('Главная компонента 2')
-            plt.title('Визуализация кластеров (PCA)')
+            plt.title(f'Визуализация кластеров (PCA)\nPC1: {explained_variance[0]:.2%}, PC2: {explained_variance[1]:.2%}')
             plt.legend(*scatter.legend_elements(), title="Кластеры")
             plt.grid(True)
             plt.show()
@@ -261,8 +267,14 @@ class DataClusteringApp(tk.Tk):
                     best_n_clusters = n_clusters
             except Exception:
                 silhouette_scores.append((n_clusters, 0.0))
+        if best_score < 0.3 and best_n_clusters == 2:
+            for n_clusters, score in silhouette_scores:
+                if n_clusters >= 3 and score > best_score * 0.9:
+                    best_n_clusters = n_clusters
+                    best_score = score
+                    break
         if best_score < 0.1:
-            silhouette_scores.append((0, "Предупреждение: низкие силуэтные коэффициенты могут указывать на плохую разделимость данных."))
+            silhouette_scores.append((0, "Предупреждение: низкие силуэтные коэффициенты указывают на плохую разделимость данных.\nРекомендация: выполните кластеризацию до обезличивания или используйте более мягкие правила обезличивания (например, увеличьте число бинов)."))
         return best_n_clusters, best_score, silhouette_scores
 
     def perform_clustering(self):
@@ -281,7 +293,7 @@ class DataClusteringApp(tk.Tk):
             if n_clusters_input and n_clusters < 2:
                 raise ValueError("Число кластеров должно быть 2 или больше.")
         except ValueError as e:
-            messagebox.showwarning("Ошибка", str(e) or "Введите целое число кластеров (0 для авто, ≥2 вручную).")
+            messagebox.showwarning("Ошибка", str(e) or "Введите целое число кластеров (ничего для авто, ≥2 вручную).")
             return
 
         total_features = len(self.current_data.columns)
@@ -294,9 +306,16 @@ class DataClusteringApp(tk.Tk):
         data = self.current_data.copy()
         try:
             for column in data.columns:
-                if column != 'Predicted_Cluster' and not pd.api.types.is_numeric_dtype(data[column]):
+                if column == 'Predicted_Cluster':
+                    continue
+                if column in ['Age', 'Purchase Amount (USD)', 'Review Rating', 'Previous Purchases']:
+                    data[column] = pd.to_numeric(data[column], errors='coerce')
+                    if data[column].isna().any():
+                        data[column] = data[column].fillna(data[column].median())
+                else:
+                    data[column] = data[column].astype(str)
                     encoder = LabelEncoder()
-                    data[column] = encoder.fit_transform(data[column].astype(str))
+                    data[column] = encoder.fit_transform(data[column])
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка кодирования данных: {e}")
             return
@@ -319,36 +338,50 @@ class DataClusteringApp(tk.Tk):
             reduced_matrix = feature_matrix[:, selected_indices]
             selected_features_count = len(selected_indices)
 
-        norms = np.linalg.norm(reduced_matrix, axis=1, keepdims=True)
-        normalized_features = reduced_matrix / np.where(norms == 0, 1, norms)
+        scaler = MinMaxScaler()
+        normalized_features = scaler.fit_transform(reduced_matrix)
 
         try:
             linkage_matrix = linkage(normalized_features, method='average', metric='chebyshev')
             if n_clusters == 0:
                 n_clusters, separability, silhouette_scores = self.find_optimal_clusters(normalized_features)
                 predicted_labels = fcluster(linkage_matrix, t=n_clusters, criterion='maxclust')
+                # Проверка распределения точек по кластерам
+                cluster_counts = pd.Series(predicted_labels).value_counts().sort_index()
+                effective_clusters = sum(cluster_counts > 1)  # Считаем кластеры с более чем 1 точкой
+                separability_str = f"{separability:.4f}" if isinstance(separability, (int, float)) else "не удалось вычислить"
                 status_lines = [
                     f"Отобрано признаков: {selected_features_count}",
-                    f"Число кластеров: {n_clusters} (авто)",
-                    f"Отделимость кластеров: {separability:.4f}",
+                    f"Число кластеров: {n_clusters} (авто, эффективных: {effective_clusters})",
+                    f"Отделимость кластеров: {separability_str}",
                     f"Время выполнения: {(time.perf_counter() - start_time):.2f} сек.",
                     "Силуэтные коэффициенты:"
                 ]
                 for item in silhouette_scores:
                     if isinstance(item, tuple):
                         n, score = item
-                        status_lines.append(f"  {n} кластеров: {score:.4f}")
+                        score_str = f"{score:.4f}" if isinstance(score, (int, float)) else "не удалось вычислить"
+                        status_lines.append(f"  {n} кластеров: {score_str}")
                     else:
                         status_lines.append(f"  {item}")
+                status_lines.append("Распределение точек по кластерам:")
+                for cluster, count in cluster_counts.items():
+                    status_lines.append(f"  Кластер {cluster}: {count} точек")
             else:
                 predicted_labels = fcluster(linkage_matrix, t=n_clusters, criterion='maxclust')
                 separability = self.compute_separability(normalized_features, predicted_labels)
+                cluster_counts = pd.Series(predicted_labels).value_counts().sort_index()
+                effective_clusters = sum(cluster_counts > 1)
+                separability_str = f"{separability:.4f}" if isinstance(separability, (int, float)) else "не удалось вычислить"
                 status_lines = [
                     f"Отобрано признаков: {selected_features_count}",
-                    f"Число кластеров: {n_clusters}",
-                    f"Отделимость кластеров: {separability:.4f}",
-                    f"Время выполнения: {(time.perf_counter() - start_time):.2f} сек."
+                    f"Число кластеров: {n_clusters} (эффективных: {effective_clusters})",
+                    f"Отделимость кластеров: {separability_str}",
+                    f"Время выполнения: {(time.perf_counter() - start_time):.2f} сек.",
+                    "Распределение точек по кластерам:"
                 ]
+                for cluster, count in cluster_counts.items():
+                    status_lines.append(f"  Кластер {cluster}: {count} точек")
         except Exception as e:
             messagebox.showerror("Ошибка", f"Ошибка кластеризации: {e}")
             return
@@ -367,37 +400,57 @@ class DataClusteringApp(tk.Tk):
 
         anonymized_df = self.current_data.copy()
 
-        if 'Age' in anonymized_df.columns and anonymized_df['Age'].notna().any():
-            bins = [0, 18, 30, 50, 100]
+        numeric_columns = ['Age', 'Purchase Amount (USD)', 'Review Rating', 'Previous Purchases']
+        for col in numeric_columns:
+            if col in anonymized_df.columns:
+                anonymized_df[col] = pd.to_numeric(anonymized_df[col], errors='coerce')
+                if anonymized_df[col].isna().any():
+                    anonymized_df[col] = anonymized_df[col].fillna(anonymized_df[col].median())
+
+        if 'Age' in anonymized_df.columns:
+            bins = [0, 10, 20, 30, 40, 50, 60, 70]  
             mids = [(bins[i] + bins[i+1]) / 2 for i in range(len(bins)-1)]
             anonymized_df['Age'] = pd.cut(
                 anonymized_df['Age'],
                 bins=bins,
                 labels=mids,
                 include_lowest=True
-            ).astype(float)
-        if 'Purchase Amount (USD)' in anonymized_df.columns and anonymized_df['Purchase Amount (USD)'].notna().any():
-            bins = [0, 30, 60, 100, 150]
+            )
+            anonymized_df['Age'] = pd.to_numeric(anonymized_df['Age'], errors='coerce')
+            if anonymized_df['Age'].isna().any():
+                anonymized_df['Age'] = anonymized_df['Age'].fillna(anonymized_df['Age'].median())
+
+        if 'Purchase Amount (USD)' in anonymized_df.columns:
+            bins = [0, 20, 40, 60, 80, 100, 120, 150]  
             mids = [(bins[i] + bins[i+1]) / 2 for i in range(len(bins)-1)]
-            mids[-1] = max(100, anonymized_df['Purchase Amount (USD)'].max())
+            max_value = max(150, anonymized_df['Purchase Amount (USD)'].max())
+            mids[-1] = max_value
             anonymized_df['Purchase Amount (USD)'] = pd.cut(
                 anonymized_df['Purchase Amount (USD)'],
                 bins=bins,
                 labels=mids,
                 include_lowest=True
-            ).astype(float)
-        if 'Review Rating' in anonymized_df.columns and anonymized_df['Review Rating'].notna().any():
-            bins = [0, 2.5, 3.5, 5.0]
+            )
+            anonymized_df['Purchase Amount (USD)'] = pd.to_numeric(anonymized_df['Purchase Amount (USD)'], errors='coerce')
+            if anonymized_df['Purchase Amount (USD)'].isna().any():
+                anonymized_df['Purchase Amount (USD)'] = anonymized_df['Purchase Amount (USD)'].fillna(anonymized_df['Purchase Amount (USD)'].median())
+
+        if 'Review Rating' in anonymized_df.columns:
+            bins = [0, 1.0, 2.0, 3.0, 4.0, 5.0]  
             mids = [(bins[i] + bins[i+1]) / 2 for i in range(len(bins)-1)]
             anonymized_df['Review Rating'] = pd.cut(
                 anonymized_df['Review Rating'],
                 bins=bins,
                 labels=mids,
                 include_lowest=True
-            ).astype(float)
-        if 'Previous Purchases' in anonymized_df.columns and anonymized_df['Previous Purchases'].notna().any():
+            )
+            anonymized_df['Review Rating'] = pd.to_numeric(anonymized_df['Review Rating'], errors='coerce')
+            if anonymized_df['Review Rating'].isna().any():
+                anonymized_df['Review Rating'] = anonymized_df['Review Rating'].fillna(anonymized_df['Review Rating'].median())
+
+        if 'Previous Purchases' in anonymized_df.columns:
             max_purchases = anonymized_df['Previous Purchases'].max()
-            bins = [-1, 0, 10, 25, 50]
+            bins = [-1, 0, 5, 10, 20, 30, 40, 50]  
             if max_purchases > 50:
                 bins.append(max_purchases)
             else:
@@ -408,30 +461,33 @@ class DataClusteringApp(tk.Tk):
                 bins=bins,
                 labels=mids,
                 include_lowest=True
-            ).astype(float)
+            )
+            anonymized_df['Previous Purchases'] = pd.to_numeric(anonymized_df['Previous Purchases'], errors='coerce')
+            if anonymized_df['Previous Purchases'].isna().any():
+                anonymized_df['Previous Purchases'] = anonymized_df['Previous Purchases'].fillna(anonymized_df['Previous Purchases'].median())
 
-        if 'Category' in anonymized_df.columns:
-            top_categories = {'Clothing', 'Footwear'}
-            anonymized_df['Category'] = anonymized_df['Category'].apply(
-                lambda x: x if x in top_categories else 'Other'
-            )
-        if 'Color' in anonymized_df.columns:
-            top_colors = {'Gray', 'Maroon', 'White'}
-            anonymized_df['Color'] = anonymized_df['Color'].apply(
-                lambda x: x if x in top_colors else 'Other'
-            )
-        if 'Size' in anonymized_df.columns:
-            anonymized_df['Size'] = anonymized_df['Size'].apply(
-                lambda x: 'S/M' if x in ['S', 'M'] else 'L/XL'
-            )
-        if 'Payment Method' in anonymized_df.columns:
-            anonymized_df['Payment Method'] = anonymized_df['Payment Method'].apply(
-                lambda x: 'Digital' if x in ['Venmo', 'PayPal', 'Credit Card'] else 'Other'
-            )
-        if 'Frequency of Purchases' in anonymized_df.columns:
-            anonymized_df['Frequency of Purchases'] = anonymized_df['Frequency of Purchases'].apply(
-                lambda x: 'Frequent' if x in ['Weekly', 'Fortnightly', 'Bi-Weekly'] else 'Infrequent'
-            )
+        # if 'Category' in anonymized_df.columns:
+        #     top_categories = {'Clothing', 'Footwear', 'Accessories'}  
+        #     anonymized_df['Category'] = anonymized_df['Category'].astype(str).apply(
+        #         lambda x: x if x in top_categories else 'Other'
+        #     )
+        # if 'Color' in anonymized_df.columns:
+        #     top_colors = {'Gray', 'Maroon', 'White', 'Black', 'Blue'}  # Оставляем больше цветов
+        #     anonymized_df['Color'] = anonymized_df['Color'].astype(str).apply(
+        #         lambda x: x if x in top_colors else 'Other'
+        #     )
+        # if 'Size' in anonymized_df.columns:
+        #     anonymized_df['Size'] = anonymized_df['Size'].astype(str).apply(
+        #         lambda x: 'S/M' if x in ['S', 'M'] else 'L/XL'
+        #     )
+        # if 'Payment Method' in anonymized_df.columns:
+        #     anonymized_df['Payment Method'] = anonymized_df['Payment Method'].astype(str).apply(
+        #         lambda x: 'Digital' if x in ['Venmo', 'PayPal', 'Credit Card'] else 'Other'
+        #     )
+        # if 'Frequency of Purchases' in anonymized_df.columns:
+        #     anonymized_df['Frequency of Purchases'] = anonymized_df['Frequency of Purchases'].astype(str).apply(
+        #         lambda x: 'Frequent' if x in ['Weekly', 'Fortnightly', 'Bi-Weekly'] else 'Infrequent'
+        #     )
 
         if 'Customer ID' in anonymized_df.columns:
             anonymized_df = anonymized_df.drop(columns=['Customer ID'])
@@ -448,52 +504,58 @@ class DataClusteringApp(tk.Tk):
             return
 
         try:
-            quasi_identifiers = anonymized_df[quasi_identifier_columns]
-            unique_counts = [len(quasi_identifiers[col].unique()) for col in quasi_identifier_columns]
-            max_combinations = np.prod(unique_counts)
-            if max_combinations > 1_000_000:
-                self.update_status(
-                    "Ошибка: слишком много уникальных комбинаций для k-анонимности.\n"
-                    "Попробуйте уменьшить число квази-идентификаторов."
-                )
-                return
+            quasi_identifiers = anonymized_df[quasi_identifier_columns].copy()
+            for col in quasi_identifiers.columns:
+                if col in ['Age', 'Purchase Amount (USD)']:
+                    quasi_identifiers[col] = pd.to_numeric(quasi_identifiers[col], errors='coerce')
+                    if quasi_identifiers[col].isna().any():
+                        quasi_identifiers[col] = quasi_identifiers[col].fillna(quasi_identifiers[col].median())
+                else:
+                    quasi_identifiers[col] = quasi_identifiers[col].astype(str)
+                    if quasi_identifiers[col].isna().any():
+                        quasi_identifiers[col] = quasi_identifiers[col].fillna(quasi_identifiers[col].mode()[0])
+
+            status_lines = ["Диагностика перед группировкой:"]
+            for col in quasi_identifiers.columns:
+                status_lines.append(f"Столбец {col}: тип {quasi_identifiers[col].dtype}, пропуски {quasi_identifiers[col].isna().sum()}")
 
             group_counts = quasi_identifiers.groupby(quasi_identifiers.columns.tolist(), observed=True).size()
             if group_counts.empty:
-                self.update_status("Невозможно вычислить k-анонимность: нет данных после группировки.")
-            else:
-                most_common_key = group_counts.idxmax()
-                keys_per_row = quasi_identifiers.apply(lambda row: tuple(row), axis=1)
-                row_group_sizes = keys_per_row.map(group_counts)
-                low_size_mask = row_group_sizes < 5
-                modified_rows = low_size_mask.sum()
+                self.update_status("\n".join(status_lines + ["Невозможно вычислить k-анонимность: нет данных после группировки."]))
+                return
 
-                if low_size_mask.any():
-                    replacement_df = pd.DataFrame(
-                        [most_common_key] * modified_rows,
-                        columns=quasi_identifiers.columns,
-                        index=quasi_identifiers[low_size_mask].index
-                    )
-                    anonymized_df.loc[low_size_mask, quasi_identifiers.columns] = replacement_df
-                    self.current_data = anonymized_df
+            most_common_key = group_counts.idxmax()
+            keys_per_row = quasi_identifiers.apply(lambda row: tuple(row), axis=1)
+            row_group_sizes = keys_per_row.map(group_counts)
+            low_size_mask = row_group_sizes < 5 
+            modified_rows = low_size_mask.sum()
 
-                new_group_counts = anonymized_df[quasi_identifier_columns].groupby(
-                    quasi_identifiers.columns.tolist(), observed=True
-                ).size()
-                k_anonymity = new_group_counts.min() if not new_group_counts.empty else 0
-                size_distribution = new_group_counts.value_counts().sort_index()
-                top_sizes = size_distribution.head(10)
+            if low_size_mask.any():
+                replacement_df = pd.DataFrame(
+                    [most_common_key] * modified_rows,
+                    columns=quasi_identifiers.columns,
+                    index=quasi_identifiers[low_size_mask].index
+                )
+                anonymized_df.loc[low_size_mask, quasi_identifiers.columns] = replacement_df
+                self.current_data = anonymized_df
 
-                status_lines = [
-                    f"k-анонимность датасета: {k_anonymity}",
-                    f"Изменено строк для k=5: {modified_rows}",
-                    "Размеры групп и их количество:"
-                ]
-                for size, count in top_sizes.items():
-                    status_lines.append(f"{size}: {count}")
-                self.update_status("\n".join(status_lines))
+            new_group_counts = anonymized_df[quasi_identifier_columns].groupby(
+                quasi_identifiers.columns.tolist(), observed=True
+            ).size()
+            k_anonymity = new_group_counts.min() if not new_group_counts.empty else 0
+            size_distribution = new_group_counts.value_counts().sort_index()
+            top_sizes = size_distribution.head(10)
+
+            status_lines.extend([
+                f"k-анонимность датасета: {k_anonymity}",
+                f"Изменено строк для k=5: {modified_rows}",
+                "Размеры групп и их количество:"
+            ])
+            for size, count in top_sizes.items():
+                status_lines.append(f"{size}: {count}")
+            self.update_status("\n".join(status_lines))
         except Exception as e:
-            self.update_status(f"Ошибка при вычислении k-анонимности: {e}")
+            self.update_status(f"Ошибка при вычислении k-анонимности: {str(e)}\nТип исключения: {type(e).__name__}")
 
 if __name__ == '__main__':
     app = DataClusteringApp()
